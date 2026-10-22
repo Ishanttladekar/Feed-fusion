@@ -16,6 +16,8 @@ import accountRoutes from './routes/accountRoutes';
 import oauthRoutes from './routes/oauthRoutes';
 import feedRoutes from './routes/feedRoutes';
 import analyticsRoutes from './routes/analyticsRoutes';
+import credentialsRoutes from './routes/credentialsRoutes';
+import followedRoutes from './routes/followedRoutes';
 
 const app = express();
 const server = http.createServer(app);
@@ -66,6 +68,8 @@ app.use('/api/accounts', accountRoutes);
 app.use('/api/oauth', oauthRoutes);
 app.use('/api/feed', feedRoutes);
 app.use('/api/analytics', analyticsRoutes);
+app.use('/api/credentials', credentialsRoutes);
+app.use('/api/followed', followedRoutes);
 
 // Error Handling Middleware
 app.use(errorHandler);

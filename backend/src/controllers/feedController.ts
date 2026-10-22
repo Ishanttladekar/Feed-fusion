@@ -3,8 +3,10 @@ import { AuthenticatedRequest } from '../middleware/auth';
 import { SocialAccount } from '../models/SocialAccount';
 import { Bookmark } from '../models/Bookmark';
 import { PostLike } from '../models/PostLike';
+import { FollowedAccount } from '../models/FollowedAccount';
 import { FeedPost, SocialPlatform } from '../types';
 import { getAdapter } from '../services/adapters';
+import { InstagramAdapter } from '../services/adapters/InstagramAdapter';
 import { INITIAL_MOCK_POSTS, generateSimulatedPost } from '../services/mockData';
 import { socketService } from '../services/socketService';
 
@@ -15,35 +17,49 @@ export async function getFeed(req: AuthenticatedRequest, res: Response): Promise
     const platformFilter = (req.query.platform as string) || 'all';
     const searchQuery = ((req.query.query as string) || '').toLowerCase().trim();
     const sortBy = (req.query.sort as string) || 'latest';
-    const forceMock = req.query.mock === 'true' || user.preferences?.mockMode;
+    const forceMock = req.query.mock === 'true' || (user.preferences?.mockMode && req.query.mock !== 'false');
 
     // Find user's active connected accounts
     const accounts = await SocialAccount.find({ userId, isActive: true });
+    const followedAccounts = await FollowedAccount.find({ userId });
 
     let aggregatedPosts: FeedPost[] = [];
+    let needsConnection = false;
 
-    if (forceMock || accounts.length === 0) {
-      // In Mock mode or if no accounts connected yet, return rich mock data
+    if (forceMock) {
+      // In Mock mode, use rich realistic mock posts
       aggregatedPosts = [...INITIAL_MOCK_POSTS];
     } else {
-      // Fetch from connected accounts
-      const fetchPromises = accounts.map(async (acc) => {
-        try {
-          const adapter = getAdapter(acc.platform, acc.isMock);
-          const decryptedToken = acc.getDecryptedAccessToken();
-          return await adapter.fetchUserPosts(decryptedToken, 15);
-        } catch (err: any) {
-          console.warn(`[Feed Aggregator] Error fetching for ${acc.platform}:`, err.message);
-          return [];
-        }
-      });
+      // REAL WORKING MODE: Fetch live data from connected accounts & followed accounts
+      if (accounts.length === 0) {
+        needsConnection = true;
+      } else {
+        const fetchPromises = accounts.map(async (acc) => {
+          try {
+            const adapter = getAdapter(acc.platform, acc.isMock);
+            const decryptedToken = acc.getDecryptedAccessToken();
+            const posts = await adapter.fetchUserPosts(decryptedToken, 20);
 
-      const results = await Promise.all(fetchPromises);
-      aggregatedPosts = results.flat();
+            // If Instagram and user has followed handles, fetch posts from them too
+            if (acc.platform === 'instagram' && !acc.isMock) {
+              const igFollowed = followedAccounts.filter((f) => f.platform === 'instagram');
+              const igAdapter = adapter as InstagramAdapter;
+              const followedPromises = igFollowed.map((f) =>
+                igAdapter.fetchFollowedAccountPosts(decryptedToken, acc.platformUserId, f.handle)
+              );
+              const followedResults = await Promise.all(followedPromises);
+              posts.push(...followedResults.flat());
+            }
 
-      // If user has connected accounts but no posts found yet, supplement with mock items
-      if (aggregatedPosts.length === 0) {
-        aggregatedPosts = [...INITIAL_MOCK_POSTS];
+            return posts;
+          } catch (err: any) {
+            console.warn(`[Feed Aggregator] Error fetching for ${acc.platform}:`, err.message);
+            return [];
+          }
+        });
+
+        const results = await Promise.all(fetchPromises);
+        aggregatedPosts = results.flat();
       }
     }
 
@@ -64,7 +80,7 @@ export async function getFeed(req: AuthenticatedRequest, res: Response): Promise
       });
     }
 
-    // Retrieve user bookmarks & likes to annotate posts
+    // Annotate bookmarks & likes
     const [bookmarks, likes] = await Promise.all([
       Bookmark.find({ userId }).select('postId'),
       PostLike.find({ userId }).select('postId'),
@@ -106,6 +122,9 @@ export async function getFeed(req: AuthenticatedRequest, res: Response): Promise
       total: aggregatedPosts.length,
       platformFilter,
       sortBy,
+      isMock: forceMock,
+      needsConnection,
+      connectedAccountsCount: accounts.length,
       posts: aggregatedPosts,
     });
   } catch (error: any) {
@@ -118,7 +137,6 @@ export async function simulateNewPost(req: AuthenticatedRequest, res: Response):
     const platform = req.body?.platform as SocialPlatform | undefined;
     const newPost = generateSimulatedPost(platform);
 
-    // Broadcast through socket.io to all listening clients
     socketService.emitNewPost(newPost);
 
     res.json({
@@ -145,11 +163,7 @@ export async function toggleBookmark(req: AuthenticatedRequest, res: Response): 
 
     if (existing) {
       await Bookmark.findByIdAndDelete(existing._id);
-      res.json({
-        success: true,
-        bookmarked: false,
-        message: 'Post removed from bookmarks',
-      });
+      res.json({ success: true, bookmarked: false, message: 'Post removed from bookmarks' });
     } else {
       await Bookmark.create({
         userId,
@@ -157,11 +171,7 @@ export async function toggleBookmark(req: AuthenticatedRequest, res: Response): 
         platform: post.platform,
         post,
       });
-      res.json({
-        success: true,
-        bookmarked: true,
-        message: 'Post saved to bookmarks',
-      });
+      res.json({ success: true, bookmarked: true, message: 'Post saved to bookmarks' });
     }
   } catch (error: any) {
     res.status(500).json({ success: false, error: error.message });

@@ -7,11 +7,16 @@ export class XAdapter implements SocialAdapter {
   platform: SocialPlatform = 'twitter';
 
   getAuthUrl(state: string, codeChallenge?: string): string {
+    if (!config.twitter.clientId) {
+      throw new Error('Twitter Client ID is not configured. Please add TWITTER_CLIENT_ID in settings or backend/.env.');
+    }
+
     const params = new URLSearchParams({
       response_type: 'code',
       client_id: config.twitter.clientId,
       redirect_uri: config.twitter.redirectUri,
-      scope: 'tweet.read users.read offline.access like.read',
+      // Required scopes for reading following timeline, user profile, and offline token refresh
+      scope: 'tweet.read users.read offline.access follows.read like.read',
       state,
       code_challenge: codeChallenge || 'challenge',
       code_challenge_method: 'S256',
@@ -22,7 +27,7 @@ export class XAdapter implements SocialAdapter {
 
   async handleCallback(code: string, codeVerifier?: string): Promise<OAuthResult> {
     if (!config.twitter.clientId || !config.twitter.clientSecret) {
-      throw new Error('Twitter credentials (TWITTER_CLIENT_ID / TWITTER_CLIENT_SECRET) are not configured.');
+      throw new Error('Twitter credentials (TWITTER_CLIENT_ID / TWITTER_CLIENT_SECRET) are missing.');
     }
 
     const authHeader = Buffer.from(
@@ -51,11 +56,12 @@ export class XAdapter implements SocialAdapter {
     const { access_token, refresh_token, expires_in } = tokenResponse.data;
 
     // Fetch user profile from /2/users/me
-    const userResponse = await axios.get(`${config.twitter.apiBase}/users/me?user.fields=profile_image_url,verified`, {
-      headers: {
-        Authorization: `Bearer ${access_token}`,
-      },
-    });
+    const userResponse = await axios.get(
+      `${config.twitter.apiBase}/users/me?user.fields=profile_image_url,verified`,
+      {
+        headers: { Authorization: `Bearer ${access_token}` },
+      }
+    );
 
     const userData = userResponse.data.data;
 
@@ -71,33 +77,71 @@ export class XAdapter implements SocialAdapter {
     };
   }
 
+  /**
+   * Fetches the reverse chronological home timeline (tweets from accounts the user follows)
+   */
   async fetchUserPosts(accessToken: string, limit = 20): Promise<FeedPost[]> {
     try {
-      // 1. Get user profile
+      // 1. Get authenticated user ID
       const userRes = await axios.get(`${config.twitter.apiBase}/users/me`, {
         headers: { Authorization: `Bearer ${accessToken}` },
       });
       const userId = userRes.data.data.id;
-      const user = userRes.data.data;
 
-      // 2. Get user tweets with attachments and public metrics
-      const tweetsRes = await axios.get(
-        `${config.twitter.apiBase}/users/${userId}/tweets?max_results=${Math.min(limit, 50)}&tweet.fields=created_at,public_metrics,entities,attachments&expansions=attachments.media_keys&media.fields=url,preview_image_url,type`,
-        {
-          headers: { Authorization: `Bearer ${accessToken}` },
-        }
-      );
+      // 2. Fetch reverse chronological timeline (Tweets from people the user follows)
+      let tweetsRes: any;
+      try {
+        tweetsRes = await axios.get(
+          `${config.twitter.apiBase}/users/${userId}/timelines/reverse_chronological?max_results=${Math.min(
+            Math.max(limit, 5),
+            50
+          )}&tweet.fields=created_at,public_metrics,entities,attachments,author_id&expansions=attachments.media_keys,author_id&media.fields=url,preview_image_url,type&user.fields=name,username,profile_image_url,verified`,
+          {
+            headers: { Authorization: `Bearer ${accessToken}` },
+          }
+        );
+      } catch (timelineErr: any) {
+        console.warn(
+          '[XAdapter] Reverse chronological timeline unavailable, falling back to user timeline:',
+          timelineErr.response?.data?.title || timelineErr.message
+        );
+        // Fallback to user timeline if app permissions restrict reverse_chronological
+        tweetsRes = await axios.get(
+          `${config.twitter.apiBase}/users/${userId}/tweets?max_results=${Math.min(
+            Math.max(limit, 5),
+            50
+          )}&tweet.fields=created_at,public_metrics,entities,attachments,author_id&expansions=attachments.media_keys,author_id&media.fields=url,preview_image_url,type&user.fields=name,username,profile_image_url,verified`,
+          {
+            headers: { Authorization: `Bearer ${accessToken}` },
+          }
+        );
+      }
 
-      const tweets = tweetsRes.data.data || [];
+      const tweets = tweetsRes.data?.data || [];
       const mediaMap: Record<string, any> = {};
+      const usersMap: Record<string, any> = {};
 
-      if (tweetsRes.data.includes?.media) {
+      if (tweetsRes.data?.includes?.media) {
         tweetsRes.data.includes.media.forEach((m: any) => {
           mediaMap[m.media_key] = m;
         });
       }
 
+      if (tweetsRes.data?.includes?.users) {
+        tweetsRes.data.includes.users.forEach((u: any) => {
+          usersMap[u.id] = u;
+        });
+      }
+
       return tweets.map((t: any): FeedPost => {
+        // Author can be any followed account
+        const author = usersMap[t.author_id] || {
+          name: 'Twitter User',
+          username: 'user',
+          profile_image_url: '',
+          verified: false,
+        };
+
         const mediaItems = (t.attachments?.media_keys || [])
           .map((key: string) => {
             const item = mediaMap[key];
@@ -114,11 +158,11 @@ export class XAdapter implements SocialAdapter {
           id: `x-${t.id}`,
           platform: 'twitter',
           author: {
-            name: user.name,
-            username: user.username,
-            avatar: user.profile_image_url || '',
-            verified: user.verified || false,
-            profileUrl: `https://twitter.com/${user.username}`,
+            name: author.name,
+            username: author.username,
+            avatar: author.profile_image_url || '',
+            verified: author.verified || false,
+            profileUrl: `https://twitter.com/${author.username}`,
           },
           content: t.text,
           media: mediaItems.length > 0 ? mediaItems : undefined,
@@ -129,12 +173,12 @@ export class XAdapter implements SocialAdapter {
             views: t.public_metrics?.impression_count || 0,
           },
           createdAt: t.created_at || new Date().toISOString(),
-          permalink: `https://twitter.com/${user.username}/status/${t.id}`,
+          permalink: `https://twitter.com/${author.username}/status/${t.id}`,
           tags: (t.entities?.hashtags || []).map((h: any) => h.tag),
         };
       });
     } catch (error: any) {
-      console.error('[XAdapter] Error fetching posts:', error.response?.data || error.message);
+      console.error('[XAdapter] Error fetching followed timeline:', error.response?.data || error.message);
       throw new Error(`X API Error: ${error.response?.data?.detail || error.message}`);
     }
   }

@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { Link } from 'react-router-dom';
 import { FeedPost, SocialPlatform } from '../types';
 import { feedService } from '../services/feedService';
 import { useAuth } from '../context/AuthContext';
@@ -11,8 +12,10 @@ import {
   Clock,
   RefreshCw,
   SearchX,
-  PlusCircle,
+  Share2,
   TrendingUp,
+  ArrowRight,
+  ShieldCheck,
 } from 'lucide-react';
 
 interface DashboardProps {
@@ -26,6 +29,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ searchQuery }) => {
   const [platformFilter, setPlatformFilter] = useState<string>('all');
   const [sortBy, setSortBy] = useState<string>('latest');
   const [refreshing, setRefreshing] = useState<boolean>(false);
+  const [needsConnection, setNeedsConnection] = useState<boolean>(false);
 
   const fetchFeed = async (isManualRefresh = false) => {
     if (isManualRefresh) setRefreshing(true);
@@ -39,6 +43,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ searchQuery }) => {
         mock: user?.preferences?.mockMode,
       });
       setPosts(data.posts);
+      setNeedsConnection((data as any).needsConnection || false);
     } catch (err) {
       console.error('Failed to load feed:', err);
     } finally {
@@ -51,7 +56,6 @@ export const Dashboard: React.FC<DashboardProps> = ({ searchQuery }) => {
     fetchFeed();
   }, [platformFilter, sortBy, searchQuery, user?.preferences?.mockMode]);
 
-  // Prepend live incoming posts when user clicks the notification banner
   const handleLoadLivePosts = (newPosts: FeedPost[]) => {
     setPosts((prev) => {
       const existingIds = new Set(prev.map((p) => p.id));
@@ -60,7 +64,6 @@ export const Dashboard: React.FC<DashboardProps> = ({ searchQuery }) => {
     });
   };
 
-  // Post counts for the platform filter chips
   const postCounts: Record<string, number> = {
     all: posts.length,
     twitter: posts.filter((p) => p.platform === 'twitter').length,
@@ -70,8 +73,30 @@ export const Dashboard: React.FC<DashboardProps> = ({ searchQuery }) => {
 
   return (
     <div className="flex-1 max-w-2xl mx-auto flex flex-col gap-5">
-      {/* Live Push Notification Banner */}
+      {/* Live Stream Notification Pop-down */}
       <LivePostNotification onLoadPosts={handleLoadLivePosts} />
+
+      {/* Real Mode Onboarding Notice if user has not connected personal accounts yet */}
+      {!user?.preferences?.mockMode && needsConnection && (
+        <div className="glass-panel rounded-2xl p-6 border border-brand-500/30 flex flex-col gap-3 shadow-xl shadow-brand-500/10">
+          <div className="flex items-center gap-2 text-brand-400">
+            <Share2 className="w-5 h-5" />
+            <h3 className="font-bold text-base text-slate-100">Connect Your Real Accounts to See Following Feeds</h3>
+          </div>
+          <p className="text-xs text-slate-300 leading-relaxed">
+            You are in <strong>Real API Mode</strong>. To load posts from accounts, creators, and pages you follow on X, Instagram, and Facebook, connect your accounts via official OAuth.
+          </p>
+          <div className="flex items-center gap-3 pt-1">
+            <Link
+              to="/accounts"
+              className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-brand-500 hover:bg-brand-600 text-white text-xs font-bold transition shadow-md shadow-brand-500/20"
+            >
+              <span>Connect Accounts</span>
+              <ArrowRight className="w-3.5 h-3.5" />
+            </Link>
+          </div>
+        </div>
+      )}
 
       {/* Control Bar: Platform Filters & Sorting */}
       <div className="flex flex-col gap-3">
@@ -95,7 +120,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ searchQuery }) => {
         {/* Sort Chips */}
         <div className="flex items-center justify-between text-xs text-slate-400 px-1">
           <span className="font-medium">
-            Showing <strong className="text-slate-200">{posts.length}</strong> aggregated posts
+            Showing <strong className="text-slate-200">{posts.length}</strong> posts
           </span>
 
           <div className="flex items-center gap-1 bg-slate-900/60 p-1 rounded-xl border border-slate-800/80">
@@ -161,20 +186,18 @@ export const Dashboard: React.FC<DashboardProps> = ({ searchQuery }) => {
           <div className="w-12 h-12 rounded-2xl bg-slate-900 border border-slate-800 flex items-center justify-center text-slate-500">
             <SearchX className="w-6 h-6" />
           </div>
-          <h3 className="text-base font-bold text-slate-200">No posts found</h3>
+          <h3 className="text-base font-bold text-slate-200">No posts in feed</h3>
           <p className="text-xs text-slate-400 max-w-sm">
             {searchQuery
-              ? `No posts matched "${searchQuery}". Try different keywords or reset filter.`
-              : 'No posts are currently available for this platform filter.'}
+              ? `No posts matched "${searchQuery}". Try different keywords.`
+              : 'Connect your accounts or add specific creators you follow to see their latest updates here.'}
           </p>
-          <button
-            onClick={() => {
-              setPlatformFilter('all');
-            }}
+          <Link
+            to="/accounts"
             className="mt-2 px-4 py-2 text-xs font-semibold rounded-xl bg-brand-500 text-white hover:bg-brand-600 transition"
           >
-            Show All Feeds
-          </button>
+            Manage Connected Accounts
+          </Link>
         </div>
       ) : (
         <div className="flex flex-col gap-4">
