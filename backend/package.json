@@ -1,5 +1,5 @@
 {
-  "name": "feed-fusion-server",
+  "name": "feed-fusion-backend",
   "version": "1.0.0",
   "description": "Feed Fusion Backend API & Real-time Service",
   "main": "dist/server.js",
